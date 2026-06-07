@@ -1,0 +1,2 @@
+def GetSummary(path):
+    pass

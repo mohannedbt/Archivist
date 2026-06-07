@@ -2,13 +2,16 @@ from app.database.db import Database
 from app.models.file_record import FileRecord
 from app.config.setting_manager import SettingsManager
 from app.models.settings import Settings
-
+import os
+path="/home/mohanned/Downloads"
+print(os.path.isdir(path))
 if __name__ == "__main__":
-
     DATABASE_URL = SettingsManager.DEFAULTS["database_url"]
     Database.init(DATABASE_URL)
     Database.connect()
     Database.create_tables([FileRecord,Settings])
+    FileStats=os.stat(path)
+    print("size:",FileStats.st_size)
 
     FileRecord.create(
         path="data/raw/example.pdf",
