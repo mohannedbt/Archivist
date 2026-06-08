@@ -16,3 +16,4 @@ class FileRecord(Model):
 
     class Meta:
         database = db
+    
