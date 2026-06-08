@@ -1,0 +1,47 @@
+# Core ML / OCR
+easyocr
+torch
+torchvision
+numpy
+opencv-python-headless
+
+# PDF / Document processing
+PyMuPDF
+pymupdf4llm
+pypdf
+pdf2image
+python-docx
+
+# OCR engine wrapper
+pytesseract
+
+# Image + scientific stack (needed by OCR + EasyOCR)
+Pillow
+scipy
+scikit-image
+shapely
+
+# Utilities
+tqdm
+PyYAML
+tabulate
+packaging
+
+# Database layer
+peewee
+
+# Text / parsing dependencies
+lxml
+python-bidi
+
+# System / helpers
+filelock
+fsspec
+networkx
+sympy
+mpmath
+
+# Optional but commonly required by OCR stack
+tifffile
+imageio
+lazy-loader
