@@ -1,40 +1,77 @@
+import os
+import threading
+import argparse
+
 from app.database.db import Database
 from app.models.file_record import FileRecord
-from app.config.setting_manager import SettingsManager
 from app.models.settings import Settings
-from app.extractors import router as rt
-from app.watcher.file_watcher import FileWatcher as fw
-import os
-path="/home/mohanned/Downloads"
-import threading
-print(os.path.isdir(path))
-import threading
-import time
+from app.config.setting_manager import SettingsManager
+from app.watcher.file_watcher import FileWatcher
+from app.ui.dashboard import run_ui
 
-def viewing():
-    seen = set()
 
-    while True:
-        with open("file.txt", "a", encoding="utf-8") as f:
-            for record in FileRecord.select():
-                if record.filename in seen:
-                    continue
+# =========================
+# CORE INIT (shared)
+# =========================
 
-                print(record.filename, record.category)
-                f.write(record.filename + "\n")
-                seen.add(record.filename)
+def init_system():
+    db_path = SettingsManager.DEFAULTS["database_url"]
 
-        time.sleep(2)  
+    Database.init(db_path)
+    Database.connect()
+    Database.create_tables([FileRecord, Settings])
+
+    SettingsManager.init_defaults()
+
+    print("[SYSTEM] Initialized")
+
+
+# =========================
+# WATCHER MODE
+# =========================
+
+def run_watcher():
+    path = os.path.expanduser("~/Downloads")
+
+    watcher = FileWatcher(path)
+    watcher.watch_start()
+
+
+# =========================
+# CLI ENTRY
+# =========================
+
 if __name__ == "__main__":
 
-    DATABASE_URL = SettingsManager.DEFAULTS["database_url"]
-    Database.init(DATABASE_URL)
-    Database.connect()
-    Database.create_tables([FileRecord,Settings])
-    file=fw(path)
-    #t1=threading.Thread(target=file.WatchStart)
-    #t1.start()
-    print(rt.extract("/home/mohanned/Downloads/Présentation-de-lentreprise-Corrigé.docx"))
-    print(rt.extract("/home/mohanned/Downloads/Untitled-2026-02-20-1123.png"))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--ui", action="store_true", help="Run UI dashboard")
+    parser.add_argument("--watch", action="store_true", help="Run watcher only")
 
+    args = parser.parse_args()
 
+    init_system()
+
+    # -------------------------
+    # UI MODE
+    # -------------------------
+    if args.ui:
+        print("[SYSTEM] Starting UI mode")
+        run_ui()
+
+    # -------------------------
+    # WATCH MODE (HEADLESS)
+    # -------------------------
+    elif args.watch:
+        print("[SYSTEM] Starting watcher mode")
+        run_watcher()
+
+    # -------------------------
+    # DEFAULT MODE (BOTH)
+    # -------------------------
+    else:
+        print("[SYSTEM] Starting default mode (UI + watcher)")
+
+        t = threading.Thread(target=run_watcher, daemon=True)
+        t.start()
+
+        run_ui()

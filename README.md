@@ -1,516 +1,234 @@
-# Archivist V1
+# Archivist
 
-AI-powered download intelligence system that watches incoming files, understands their content, classifies them, stores metadata, and organizes them automatically.
+Archivist is an AI-assisted, local file organizer that watches incoming files (for example your Downloads folder), extracts content, classifies files, stores structured metadata, and moves files into an organized folder hierarchy.
 
----
+This repository contains a v1 implementation with a GUI (Tkinter), a filesystem watcher, extractors for common file types, a small rule-based classifier, and a simple SQLite-backed metadata store.
 
-# Goal
+--
 
-Transform:
+## Goals
 
-```text
-Downloads/
-├── paper.pdf
-├── CV_final_v3.pdf
-├── screenshot.png
-└── project.zip
+- Automatically process new files arriving in a watch folder.
+- Extract text and metadata from files (PDF, images, text, ...).
+- Categorize files and move them into organized folders.
+- Keep a searchable metadata record of processed files.
+- Provide a simple UI for configuration and monitoring.
+
+This project is intentionally minimal and modular so we can swap in smarter components (embeddings, LLMs, RAG search) in later phases.
+
+--
+
+## Quick Start
+
+Prerequisites: Python 3.10+ and the project `requirements.txt` installed in a virtual environment.
+
+1. Install dependencies:
+
+```bash
+python3 -m pip install -r requirements.txt
 ```
 
-Into:
+2. Run the app (default mode: UI + watcher):
 
-```text
-Organized/
-├── Learning/
-├── Projects/
-├── Internships/
-└── Personal/
+```bash
+python3 -m app.main
 ```
 
-without relying entirely on hardcoded rules.
+3. The UI lets you choose a `Downloads` folder and an `Organized` folder, and start the watcher. Drop or copy files into the watched folder to exercise the pipeline.
 
----
+--
 
-# System Architecture
+## What the app does (high-level)
 
-```text
-File Appears
-      ↓
-Watcher
-      ↓
-Ingestion Service
-      ↓
-Analyzer
-      ↓
-Extractor
-      ↓
-Classifier
-      ↓
-Database
-      ↓
-Organizer
+1. `FileWatcher` monitors a directory and emits file-created events.
+2. `IngestionService` runs the pipeline for a new file:
+   - Extract content using the appropriate extractor (PDF, image OCR, text, ...).
+   - Classify the file (v1: rule-based classifier in `app/classifiers/rule_classifier.py`).
+   - Save a `FileRecord` entry into the SQLite DB (`data/archivist.db`).
+   - Move the file into `organized/<category>` (creates subfolders as needed).
+3. The UI (`app/ui/dashboard.py`) displays status, logs, counters, and lets you start/stop the watcher.
+4. A lightweight `EventBus` decouples components — the watcher, ingestion service and UI communicate via events.
+
+--
+
+## Important Files and Responsibilities
+
+- `app/main.py` — application entry point, initializes DB, settings and starts the app.
+- `app/config/setting_manager.py` — settings helpers; `init_defaults()` populates default settings in DB.
+- `app/watcher/file_watcher.py` — uses `watchdog` to detect new files and trigger ingestion.
+- `app/services/ingestion_service.py` — orchestrates processing and calls `move_file()`.
+- `app/helper/FileHelper.py` — helpers: extraction routing (`extract()`), file hashing and movement logic.
+- `app/extractors/` — per-file-type extractors (PDF, image, text). They return text and metadata used by the classifier.
+- `app/classifiers/rule_classifier.py` — categorizes files using simple rules. Replaceable with embeddings/LLMs later.
+- `app/models/` — database models (`FileRecord`, `Settings`).
+- `app/ui/dashboard.py` — Tkinter-based dashboard; shows stats and logs.
+
+When changing behavior, prefer changing the service and helper modules (not UI) so core logic remains testable.
+
+--
+
+## Settings
+
+Settings are stored in the `settings` table in the SQLite DB. The `SettingsManager` exposes helper methods:
+
+- `SettingsManager.init_defaults()` — create default rows for keys that are missing.
+- `SettingsManager.get(key, default=None)` — return stored value or default.
+- `SettingsManager.set(key, value)` — update or create setting.
+
+Key defaults (see `app/config/setting_manager.py`):
+
+- `downloads_dir` — default: `~/Downloads`
+- `organized_dir` — default: `data/organized`
+- `database_url` — default: `data/archivist.db`
+- `allowed_extensions` — default: `.pdf,.txt,.jpg,.png`
+
+If a stored setting points to an invalid path (for example a Windows path on Linux), the watcher will raise a `FileNotFoundError` when trying to start. To fix: update the `downloads_dir` in the DB or via the UI.
+
+--
+
+## Running and Testing the Pipeline
+
+To manually test the pipeline without the UI:
+
+1. Ensure DB exists and defaults are initialised:
+
+```bash
+python3 -c "from app.database.db import Database; from app.config.setting_manager import SettingsManager; Database.init('data/archivist.db'); Database.connect(); SettingsManager.init_defaults(); print('db ready')"
 ```
 
----
+2. Trigger ingestion programmatically (small example):
 
-# Folder Structure
-
-```text
-app/
-├── main.py
-├── config/
-├── models/
-├── database/
-├── watcher/
-├── extractors/
-├── classifiers/
-├── organizers/
-└── services/
+```bash
+python3 - <<'PY'
+from app.services.ingestion_service import IngestionService
+IngestionService.process('/path/to/test.pdf')
+print('done')
+PY
 ```
 
----
+3. Or start the watcher and drop a file in the watched folder to see logs and DB entries.
+
+--
 
-# File Responsibilities
+## Debugging tips
 
----
+- If the watcher prints a `FileNotFoundError: Invalid watch directory: ...`, check the stored `downloads_dir` value in the DB. You can update it via `SettingsManager.set()` or delete the record so `init_defaults()` repopulates defaults.
+- Duplicate logs like multiple "Watching: /some/path" indicate multiple watcher instances; ensure you only run a single UI/daemon.
+- If files are not moved but ingestion prints `[INGESTED]`, verify `move_file()` in `app/helper/FileHelper.py` and check filesystem permissions of the target folder.
 
-## app/main.py
+--
 
-### Purpose
+## Architecture Details (components)
 
-Application entry point.
+- EventBus (`app/core/event_bus.py`) — in-memory pub/sub. Events used:
+  - `FILE_CREATED` — emitted by the watcher after successful ingestion.
+  - `FILE_ERROR` — emitted on errors.
+- Watcher (`app/watcher/file_watcher.py`) — schedules a `FileCreatedHandler` that runs ingestion and emits events. The dashboard subscribes to events and updates counters.
+- Ingestion (`app/services/ingestion_service.py`) — de-duplicates by file path, extracts text, classifies, saves `FileRecord` and moves the file.
+- Extractors (`app/extractors/*`) — return text for classification and summaries for metadata.
 
-This file starts Archivist.
+--
 
-Responsibilities:
+## Roadmap — Next Steps (high detail)
 
-* Load configuration
-* Initialize database
-* Start watcher
-* Register services
+The following is a prioritized roadmap with acceptance criteria and action items for each feature. Each item is broken down into smaller tasks and measurable milestones.
 
-Example flow:
+1) AI File Brain — core research & design
+   - Goal: Replace or augment rule-based classification with an AI-driven system that understands content semantics.
+   - Tasks:
+     - Evaluate local inference vs cloud LLMs constraints (privacy, latency, cost).
+     - Choose embedding model (local/on-device) for semantic similarity (e.g. sentence-transformers) or use OpenAI embeddings if cloud allowed.
+     - Design metadata schema changes: store embeddings in DB or a separate vector store.
+     - Acceptance: same-file classification accuracy improves vs rule baseline on held-out sample.
 
-```text
-Start App
-   ↓
-Connect Database
-   ↓
-Start File Watcher
-   ↓
-Wait For Events
-```
+2) Auto Categories UI panel
+   - Goal: Show suggested categories with confidence, allow user to override and save corrections.
+   - Tasks:
+     - Add a UI panel in `app/ui/dashboard.py` listing recent ingested files with category suggestions and a dropdown for user selection.
+     - Persist corrections to `FileRecord.category` and record `user_corrected` flag.
+     - Acceptance: UI displays suggestions and corrected categories persist to DB.
 
-Think of this as the engine start button.
+3) Smart Summaries preview
+   - Goal: Provide concise, context-aware summaries for files (first-class metadata in `FileRecord.summary`).
+   - Tasks:
+     - Implement a summarizer glue that can use either a small local LLM (e.g. Llama.cpp) or heuristic summarizer fallback.
+     - Add UI preview and optional “Regenerate summary” action.
+     - Acceptance: Summaries are saved and visible in UI; optional compare between 2 summarizers.
 
----
+4) Drag & Drop organizer
+   - Goal: Allow users to drag entries in the UI to change categories or target folders, and have the organizer move files accordingly.
+   - Tasks:
+     - Add drag/drop UX in the UI listing and implement a programmatic move API in `Organizer`.
+     - Ensure move operations update database and emit events for counters.
+     - Acceptance: Dragging an item moves the file on disk and updates the DB entry.
 
-## app/config/settings.py
+5) Duplicate detection system
+   - Goal: Detect identical (or near-duplicate) files via hash + fuzzy similarity and provide merge/keep options.
+   - Tasks:
+     - File hashing already exists (`calculate_hash`); extend DB schema to index `file_hash`.
+     - Implement fuzzy similarity by small embedding compare + edit-distance for text.
+     - Provide a conflict resolution UI (keep newest, keep largest, keep both with renaming).
+     - Acceptance: Duplicates detected and user can resolve them from UI.
 
-### Purpose
+6) Semantic file search (RAG-ready)
+   - Goal: Allow semantic queries over your files ("find meeting notes about project X") using embeddings + optional RAG recall.
+   - Tasks:
+     - Add embeddings pipeline for each `FileRecord` summary/content.
+     - Integrate a vector store (SQLite+FAISS or external) or store embeddings in DB if small.
+     - Implement search endpoint and a small UI to run semantic queries and show results ranked by similarity.
+     - Acceptance: Search returns relevant files for human-verified prompts.
 
-Centralized configuration.
+--
 
-Store:
+## Next Plan — Implementation Phases (concrete)
 
-* Downloads folder path
-* Organized folder path
-* Database path
-* Allowed file types
-* Logging settings
+Phase A — Stabilize & UX (1–2 weeks)
+- Harden settings flow: ensure `SettingsManager.init_defaults()` runs before UI reads defaults; validate settings and show warnings.
+- Add a small searchable recent-file list in the UI and wire event bus updates.
+- Add tests for `move_file`, `calculate_hash`, and ingestion dedup path.
 
-Example:
+Phase B — AI File Brain PoC (2–3 weeks)
+- Build a prototype pipeline producing embeddings for documents and run a simple KNN-retrieval.
+- Replace rule classifier with a “suggestion” step that uses KNN+rules hybrid.
 
-```text
-Downloads Directory
-Processing Directory
-Categories
-```
+Phase C — Interaction features (2–4 weeks)
+- Implement Auto Categories panel, Smart Summaries preview, and Drag & Drop organizer.
+- Add duplication detection UI and resolution flows.
 
-Avoid hardcoding paths elsewhere.
+Phase D — Semantic Search & RAG (3–6 weeks)
+- Build vector store persistence, advanced query UI, and optional RAG answer UI that composes file content.
 
----
+--
 
-## app/models/file_record.py
+## Milestones & Acceptance Criteria
 
-### Purpose
+- M1: Stable watcher + UI that displays defaults and counters (current state). Tests for ingestion flow.
+- M2: Auto Categories UI + persistent corrections and improved classification suggestions.
+- M3: Duplicate detection and resolve UI.
+- M4: Semantic search with embeddings and satisfactory precision on sample queries.
 
-Represents a file inside the system.
+--
 
-Defines the structure of stored metadata.
+## Development notes and conventions
 
-Example information:
+- Keep core logic in `app/services` and `app/helper` so it is testable without the UI.
+- Use the `EventBus` for cross-component notifications — UI subscribes to `FILE_CREATED` and `FILE_ERROR`.
+- Store human corrections and metadata in `FileRecord` for future learning.
 
-```text
-filename
-path
-category
-summary
-hash
-created_at
-```
+--
 
-This becomes the source of truth for processed files.
+## Contributing
 
----
+1. Create a feature branch `feature/<short-description>`.
+2. Run linters and tests locally.
+3. Open a PR with a short description and testing notes.
 
-## app/database/db.py
+--
 
-### Purpose
+## Contact
 
-Database initialization.
+Open issues in the repo for feature requests, bugs, or architecture changes.
 
-Responsibilities:
+--
 
-* Create database connection
-* Create tables
-* Initialize schema
-
-This file knows how to create the database.
-
----
-
-## app/database/session.py
-
-### Purpose
-
-Database session management.
-
-Responsibilities:
-
-* Open database sessions
-* Close sessions
-* Handle transactions
-
-Other services should request sessions from here.
-
----
-
-## app/watcher/file_watcher.py
-
-### Purpose
-
-Monitors folders for changes.
-
-Responsibilities:
-
-* Detect new files
-* Detect updates
-* Trigger ingestion pipeline
-
-Example:
-
-```text
-New file:
-OperatingSystems.pdf
-```
-
-The watcher does not understand files.
-
-It only notices that something happened.
-
----
-
-## app/services/ingestion_service.py
-
-### Purpose
-
-Orchestrates processing.
-
-This is the most important service.
-
-Responsibilities:
-
-1. Receive new file
-2. Analyze metadata
-3. Extract content
-4. Classify
-5. Save results
-6. Organize file
-
-Think of it as the conductor of the orchestra.
-
----
-
-## app/extractors/
-
-### Purpose
-
-Convert files into text and metadata.
-
-Different file types require different extractors.
-
----
-
-### pdf_extractor.py
-
-Responsibilities:
-
-* Read PDF content
-* Extract title
-* Extract text
-* Count pages
-
-Output:
-
-```text
-PDF Content
-Metadata
-```
-
----
-
-### text_extractor.py
-
-Responsibilities:
-
-* Read txt files
-* Read markdown files
-* Extract content
-
-Output:
-
-```text
-Raw Text
-```
-
----
-
-### image_extractor.py
-
-Responsibilities:
-
-* OCR screenshots
-* OCR scanned documents
-* Extract visible text
-
-Output:
-
-```text
-Detected Text
-```
-
----
-
-# Future Extractors
-
-Potential additions:
-
-```text
-zip_extractor.py
-audio_extractor.py
-video_extractor.py
-repo_extractor.py
-```
-
----
-
-## app/classifiers/rule_classifier.py
-
-### Purpose
-
-Determine file category.
-
-Input:
-
-```text
-Extracted Content
-```
-
-Output:
-
-```text
-Learning
-Projects
-Internships
-Personal
-Other
-```
-
-V1 uses rules.
-
-Future versions may use:
-
-* Embeddings
-* Local LLMs
-* Fine-tuned models
-
----
-
-## app/organizers/organizer.py
-
-### Purpose
-
-Move files to final destinations.
-
-Responsibilities:
-
-* Create folders
-* Move files
-* Rename files
-* Archive files
-
-Input:
-
-```text
-Category
-Original File
-```
-
-Output:
-
-```text
-Moved File
-```
-
-This is the component that changes the filesystem.
-
----
-
-# Data Folder
-
-```text
-data/
-├── raw/
-├── processed/
-└── archivist.db
-```
-
----
-
-## data/raw/
-
-Purpose:
-
-Temporary processing area.
-
-Files may be copied here before analysis.
-
-Useful for debugging.
-
----
-
-## data/processed/
-
-Purpose:
-
-Stores processed artifacts.
-
-Examples:
-
-```text
-Summaries
-Extracted Text
-Metadata
-```
-
-Useful for future AI training and evaluation.
-
----
-
-## data/archivist.db
-
-Purpose:
-
-SQLite database.
-
-Stores:
-
-* Processed files
-* Categories
-* Summaries
-* Hashes
-* Metadata
-
----
-
-# Tests Folder
-
-```text
-tests/
-```
-
-Purpose:
-
-Verify behavior.
-
-Example tests:
-
-```text
-PDF extraction works
-Classifier returns expected category
-Organizer moves files correctly
-```
-
----
-
-# Scripts Folder
-
-```text
-scripts/
-```
-
-Purpose:
-
-Utility scripts.
-
-Examples:
-
-```text
-Create folders
-Reset database
-Import sample files
-```
-
-Not part of production runtime.
-
----
-
-# Docs Folder
-
-```text
-docs/
-```
-
-Purpose:
-
-Architecture and design documents.
-
-Possible documents:
-
-```text
-system_design.md
-roadmap.md
-future_features.md
-```
-
----
-
-# V1 Categories
-
-Initial categories:
-
-```text
-Learning
-Projects
-Internships
-Personal
-Media
-Other
-```
-
-Keep this intentionally simple.
-
----
-
-# V1 Success Criteria
-
-Archivist V1 is considered complete when:
-
-1. Watcher detects new files.
-2. Extractor reads file content.
-3. Classifier determines category.
-4. Metadata is saved.
-5. Organizer moves the file.
-6. Processing history is visible in SQLite.
-
-At this point the complete ingestion pipeline exists and future AI improvements can be added without redesigning the architecture.
+Thank you — Archivist is deliberately small and modular so you can iterate quickly. The next big upgrade is the "AI File Brain": embeddings, suggestions, and a semantic UX. See "Roadmap — Next Steps" above for full details.

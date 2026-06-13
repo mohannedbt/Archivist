@@ -1,70 +1,33 @@
 import os
 
-# your existing extractors
-from app.extractors.pdf_extractor import Extract as extract_pdf
-from app.extractors.image_extractor import Extract as extract_image
-from app.extractors.text_extractor import getText as extract_docx
+from app.extractors.pdf_extractor import Extract as pdf_extract
+from app.extractors.image_extractor import Extract as image_extract
+from app.extractors.text_extractor import getText as docx_extract
 
 
-# -------------------------
-# FILE TYPE DETECTION
-# -------------------------
-def detect_file_type(filepath):
+def detect_type(filepath):
     ext = os.path.splitext(filepath)[1].lower()
 
-    if ext in [".pdf"]:
+    if ext == ".pdf":
         return "pdf"
-
-    if ext in [".png", ".jpg", ".jpeg", ".webp"]:
+    if ext in [".png", ".jpg", ".jpeg"]:
         return "image"
-
-    if ext in [".docx"]:
+    if ext == ".docx":
         return "docx"
-
 
     return "unknown"
 
 
-# -------------------------
-# MAIN ROUTER
-# -------------------------
 def extract(filepath):
-    file_type = detect_file_type(filepath)
+    t = detect_type(filepath)
 
-    print(f"\n[ROUTER] File: {filepath}")
-    print(f"[ROUTER] Detected type: {file_type}")
+    if t == "pdf":
+        return pdf_extract(filepath)
 
-    try:
-        # ---------------- PDF ----------------
-        if file_type == "pdf":
-            return extract_pdf(filepath)
+    if t == "image":
+        return image_extract(filepath)
 
-        # ---------------- IMAGE ----------------
-        if file_type == "image":
-            return extract_image(filepath)
+    if t == "docx":
+        return docx_extract(filepath)
 
-        # ---------------- DOCX ----------------
-        if file_type == "docx":
-            return extract_docx(filepath)
-
-
-        # ---------------- UNKNOWN (SMART FALLBACK) ----------------
-        print("[ROUTER] Unknown type → using PDF fallback first")
-
-        try:
-            return extract_pdf(filepath)
-        except:
-            pass
-
-        try:
-            return extract_image(filepath)
-        except:
-            pass
-
-        return None
-
-    except Exception as e:
-        print(f"[ROUTER ERROR] {e}")
-        return None
-def GetSummary(filepath):
-     pass
+    return ""

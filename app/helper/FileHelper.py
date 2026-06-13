@@ -1,77 +1,58 @@
-from tkinter.filedialog import askdirectory
 import os
-import tqdm
+import shutil
+import hashlib
 import datetime
-import pprint
-from app.extractors.router import GetSummary
+
+from app.extractors.router import extract
 from app.classifiers.rule_classifier import Categorize
-from app.models.file_record import FileRecord
-legal=[".pdf",".jpeg",".exe",".docx",".txt"]
+
 
 def convert(epoch):
-    epoch_date_time = datetime.datetime.fromtimestamp(epoch)   
-    return epoch_date_time
-    
-def GetDownloadsDirectory():
-    DownloadDir='{}'.format(askdirectory())
-    return DownloadDir
+    return datetime.datetime.fromtimestamp(epoch)
 
-# Source - https://stackoverflow.com/a/1094933
-# Posted by Sridhar Ratnakumar, modified by community. See post 'Timeline' for change history
-# Retrieved 2026-06-07, License - CC BY-SA 4.0
 
-def Unitof_fmt(num, suffix="B"):
-    for unit in ("", "K", "M", "G", "T", "P", "E", "Z"):
-        if abs(num) < 1024.0:
-            return f"{unit}{suffix}"
-        num /= 1024.0
-    return f"{num:.1f}Yi{suffix}"
+def calculate_hash(filepath):
+    sha256 = hashlib.sha256()
 
-def FormatSize(n):
-  l=len(str(n))
-  N=(l//3)*3
-  size=n/pow(10,N)
-  return size
-  
-  
-def GetFileInfo(filepath,filename):
-   fileStats=os.stat(filepath)
-   dic={}
-   dic["path"]=filepath
-   dic["filename"]=filename
-   dic["Size"]=FormatSize(fileStats.st_size)
-   dic["Unit"]=Unitof_fmt(fileStats.st_size)
-   dic["created_at_HR"]=convert(fileStats.st_ctime)
-   dic["created_at"]=(fileStats.st_ctime)
-   dic["hash"]=hash(filepath)
-   dic["Summary"]=GetSummary(filepath)
-   dic["Category"]=Categorize(filepath)
-   return dic    
-def LoopDirectory(Downloaddir: str, Legal=legal):
-    DirDic = {}
+    with open(filepath, "rb") as f:
+        while chunk := f.read(8192):
+            sha256.update(chunk)
 
-    for subdir, dirs, files in os.walk(Downloaddir):
-        for file in files:
+    return sha256.hexdigest()
 
-            if FileRecord.get_or_none(FileRecord.filename == file):
-                continue
 
-            if not any(file.endswith(l) for l in Legal):
-                continue
+def get_file_info(filepath):
+    stats = os.stat(filepath)
 
-            filepath = os.path.join(subdir, file)
-            dic = GetFileInfo(filepath, file)
+    text = extract(filepath)
+    category = Categorize(str(text or ""))
 
-            DirDic[file] = dic
+    return {
+        "path": filepath,
+        "filename": os.path.basename(filepath),
+        "created_at": convert(stats.st_ctime),
+        "file_hash": calculate_hash(filepath),
+        "summary": (text or "")[:300],
+        "category": category,
+    }
 
-            FileRecord.create(
-                path=dic["path"],
-                filename=dic["filename"],
-                created_at=dic["created_at_HR"],
-                category=os.path.splitext(file)[1],
-                summary="",
-                file_hash=str(dic["hash"])
-            )
 
-    return DirDic
-             
+def ensure_directory(path):
+    os.makedirs(path, exist_ok=True)
+
+
+def move_file(filepath, target_dir):
+    ensure_directory(target_dir)
+
+    filename = os.path.basename(filepath)
+    destination = os.path.join(target_dir, filename)
+
+    base, ext = os.path.splitext(filename)
+    i = 1
+
+    while os.path.exists(destination):
+        destination = os.path.join(target_dir, f"{base}_{i}{ext}")
+        i += 1
+
+    shutil.move(filepath, destination)
+    return destination

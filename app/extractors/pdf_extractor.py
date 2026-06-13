@@ -1,147 +1,218 @@
-import pymupdf4llm
-from pypdf import PdfReader
-from pdf2image import convert_from_path
+import fitz
 import pytesseract
+from pdf2image import convert_from_path
+from PIL import Image
+import io
+
+from pypdf import PdfReader
+
+
+# =========================
+# TYPE SAFETY NORMALIZER
+# =========================
+
+def normalize_text(text):
+    """
+    Ensures output is always a clean string.
+    Handles:
+    - str
+    - list[str]
+    - None
+    """
+
+    if text is None:
+        return ""
+
+    if isinstance(text, list):
+        return "\n".join(str(x) for x in text)
+
+    return str(text)
 
 
 def _is_valid(text):
-    return text is not None and text.strip() != ""
+    text = normalize_text(text)
+    return len(text.strip()) > 0
 
 
-# -------------------------
-# LEVEL 1: FAST MARKDOWN
-# -------------------------
+# =========================
+# PDF TYPE CLASSIFIER
+# =========================
+
+class PDFType:
+    DIGITAL = "digital"
+    SCANNED = "scanned"
+    MIXED = "mixed"
+
+
+def classify_pdf(filepath: str):
+    """
+    Detect PDF type based on text density.
+    """
+
+    doc = fitz.open(filepath)
+
+    total_pages = len(doc)
+    text_pages = 0
+
+    for i in range(total_pages):
+        page = doc.load_page(i)
+        text = normalize_text(page.get_text())
+
+        if len(text.strip()) > 50:
+            text_pages += 1
+
+    ratio = text_pages / total_pages if total_pages else 0
+
+    if ratio > 0.7:
+        return PDFType.DIGITAL
+
+    if ratio < 0.2:
+        return PDFType.SCANNED
+
+    return PDFType.MIXED
+
+
+# =========================
+# LEVEL 1: MARKDOWN
+# =========================
+
 def extract_markdown(filepath):
-    print(f"[LEVEL 1] pymupdf4llm → {filepath}")
+    print(f"[LEVEL 1] markdown → {filepath}")
+
     try:
+        import pymupdf4llm
         text = pymupdf4llm.to_markdown(filepath)
 
+        text = normalize_text(text)
+
         if _is_valid(text):
-            print("[LEVEL 1] SUCCESS (markdown extracted)")
             return text
 
-        print("[LEVEL 1] EMPTY RESULT")
-
     except Exception as e:
-        print(f"[LEVEL 1] ERROR: {e}")
+        print(f"[LEVEL 1 ERROR] {e}")
 
     return None
 
 
-# -------------------------
-# LEVEL 2: PYPDF TEXT LAYER
-# -------------------------
+# =========================
+# LEVEL 2: PYPDF
+# =========================
+
 def extract_pypdf(filepath):
     print(f"[LEVEL 2] pypdf → {filepath}")
+
     try:
         reader = PdfReader(filepath)
 
-        text = "\n".join((p.extract_text() or "") for p in reader.pages)
+        pages = []
+        for p in reader.pages:
+            pages.append(normalize_text(p.extract_text()))
+
+        text = "\n".join(pages)
 
         if _is_valid(text):
-            print("[LEVEL 2] SUCCESS (text layer extracted)")
             return text
 
-        print("[LEVEL 2] EMPTY RESULT")
-
     except Exception as e:
-        print(f"[LEVEL 2] ERROR: {e}")
+        print(f"[LEVEL 2 ERROR] {e}")
 
     return None
 
 
-# -------------------------
-# LEVEL 3: PYMUPDF RAW TEXT
-# -------------------------
-def extract_pymupdf_raw(filepath):
-    print(f"[LEVEL 3] pymupdf raw → {filepath}")
+# =========================
+# LEVEL 3: HYBRID (SMART OCR)
+# =========================
+
+def extract_hybrid_pymupdf(filepath):
+    """
+    Per-page smart extraction:
+    - text first
+    - OCR only if needed
+    """
+
+    print(f"[HYBRID] pymupdf → {filepath}")
+
     try:
-        import fitz
         doc = fitz.open(filepath)
+
         pages_text = []
+
         for i in range(len(doc)):
             page = doc.load_page(i)
-            text = page.get_text()
 
-            if text:
+            # 1. Try digital text
+            text = normalize_text(page.get_text())
+
+            if len(text.strip()) > 20:
                 pages_text.append(text)
-            else:
-                print(f"[LEVEL 3] Page {i} empty")
+                continue
 
-        text = "\n".join(pages_text)
+            # 2. OCR fallback
+            print(f"[PAGE {i}] OCR fallback")
 
-        if _is_valid(text):
-            print("[LEVEL 3] SUCCESS (raw text extracted)")
-            return text
+            pix = page.get_pixmap(dpi=300)
+            img_bytes = pix.tobytes("png")
 
-        print("[LEVEL 3] EMPTY RESULT")
+            image = Image.open(io.BytesIO(img_bytes))
+            ocr_text = pytesseract.image_to_string(image)
+
+            pages_text.append(normalize_text(ocr_text))
+
+        final_text = "\n".join(pages_text)
+
+        if _is_valid(final_text):
+            return final_text
 
     except Exception as e:
-        print(f"[LEVEL 3] ERROR: {e}")
+        print(f"[HYBRID ERROR] {e}")
 
     return None
 
 
-# -------------------------
-# LEVEL 4: OCR
-# -------------------------
-def extract_ocr(filepath):
-    print(f"[LEVEL 4] OCR → {filepath}")
-    try:
-        images = convert_from_path(filepath)
-
-        print(f"[LEVEL 4] Pages to OCR: {len(images)}")
-
-        text = []
-        for i, img in enumerate(images):
-            page_text = pytesseract.image_to_string(img)
-
-            if page_text.strip():
-                print(f"[LEVEL 4] Page {i} OCR success")
-            else:
-                print(f"[LEVEL 4] Page {i} empty OCR")
-
-            text.append(page_text)
-
-        final_text = "\n".join(text)
-
-        if _is_valid(final_text):
-            print("[LEVEL 4] SUCCESS (OCR extracted)")
-            return final_text
-
-        print("[LEVEL 4] EMPTY RESULT")
-
-    except Exception as e:
-        print(f"[LEVEL 4] ERROR: {e}")
-
-    return ""
-
-
-# -------------------------
+# =========================
 # MASTER PIPELINE
-# -------------------------
+# =========================
+
 def Extract(filepath):
-    print(f"\n========== EXTRACT START ==========")
+    print("\n========== PDF EXTRACT START ==========")
     print(f"FILE: {filepath}")
 
-    text = extract_markdown(filepath)
-    if _is_valid(text):
-        print("[PIPELINE] DONE at LEVEL 1\n")
-        return text
+    pdf_type = classify_pdf(filepath)
+    print(f"[PDF TYPE] {pdf_type}")
 
-    text = extract_pypdf(filepath)
-    if _is_valid(text):
-        print("[PIPELINE] DONE at LEVEL 2\n")
-        return text
+    # -------------------------
+    # DIGITAL
+    # -------------------------
+    if pdf_type == PDFType.DIGITAL:
 
-    text = extract_pymupdf_raw(filepath)
-    if _is_valid(text):
-        print("[PIPELINE] DONE at LEVEL 3\n")
-        return text
+        text = extract_markdown(filepath)
+        if _is_valid(text):
+            print("[DONE] markdown")
+            return text
 
-    text = extract_ocr(filepath)
+        text = extract_pypdf(filepath)
+        if _is_valid(text):
+            print("[DONE] pypdf")
+            return text
 
-    print("[PIPELINE] DONE at LEVEL 4 (OCR fallback)\n")
-    return text
+        return extract_hybrid_pymupdf(filepath)
 
+    # -------------------------
+    # SCANNED
+    # -------------------------
+    if pdf_type == PDFType.SCANNED:
+        return extract_hybrid_pymupdf(filepath)
 
+    # -------------------------
+    # MIXED
+    # -------------------------
+    if pdf_type == PDFType.MIXED:
+
+        text = extract_pypdf(filepath)
+        if _is_valid(text):
+            print("[DONE] mixed → pypdf")
+            return text
+
+        return extract_hybrid_pymupdf(filepath)
+
+    return ""
